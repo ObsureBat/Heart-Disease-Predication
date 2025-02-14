@@ -178,17 +178,34 @@ def main():
                 st.subheader("Model Performance Metrics")
                 st.plotly_chart(create_metrics_plot(results))
                 
-                # Display detailed metrics for each model
-                col1, col2, col3 = st.columns(3)
-                models = ['Random Forest', 'XGBoost', 'Voting']
-                cols = [col1, col2, col3]
+                # PSO Optimization Results
+                st.header("PSO Optimization Results")
                 
-                for model, col in zip(models, cols):
-                    with col:
-                        st.subheader(f"{model} Metrics")
-                        metrics = results['metrics'][model]
-                        for metric, value in metrics.items():
-                            st.metric(metric.capitalize(), f"{value:.2%}")
+                # Show convergence plots
+                st.subheader("PSO Convergence History")
+                convergence_fig = go.Figure()
+                for model, opt_results in results['optimization_results'].items():
+                    convergence_fig.add_trace(go.Scatter(
+                        y=opt_results['convergence_history'],
+                        name=model,
+                        mode='lines'
+                    ))
+                convergence_fig.update_layout(
+                    title="PSO Convergence Over Iterations",
+                    xaxis_title="Iteration",
+                    yaxis_title="Best Score",
+                    hovermode='x unified'
+                )
+                st.plotly_chart(convergence_fig)
+                
+                # Show best parameters
+                st.subheader("Best Parameters Found")
+                for model, opt_results in results['optimization_results'].items():
+                    with st.expander(f"{model} Optimization Results"):
+                        st.write("Best Parameters:")
+                        for param, value in opt_results['best_params'].items():
+                            st.write(f"- {param}: {value}")
+                        st.write(f"Best Cross-validation Score: {opt_results['best_score']:.4f}")
                 
                 # Feature Importance
                 st.subheader("Feature Importance Analysis")
@@ -281,82 +298,34 @@ def main():
                     # Display results
                     st.header("Risk Assessment Results")
                     
-                    # Main prediction with confidence
-                    risk_prob = prediction['probability']
-                    confidence = prediction['confidence']
+                    # Model Predictions
+                    st.subheader("Model Predictions")
                     
-                    # Determine risk level and color
-                    if risk_prob < 0.2:
-                        risk_level = "Very Low"
-                        color = "#2ecc71"
-                    elif risk_prob < 0.4:
-                        risk_level = "Low"
-                        color = "#27ae60"
-                    elif risk_prob < 0.6:
-                        risk_level = "Moderate"
-                        color = "#f1c40f"
-                    elif risk_prob < 0.8:
-                        risk_level = "High"
-                        color = "#e67e22"
-                    else:
-                        risk_level = "Very High"
-                        color = "#e74c3c"
-                    
-                    # Display main prediction
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown(
-                            f"""
-                            <div style="padding: 20px; background-color: {color}; 
-                                      border-radius: 10px; text-align: center; color: white;">
-                                <h2 style="margin: 0; font-size: 2.5em;">{risk_prob:.1%}</h2>
-                                <p style="margin: 5px 0 0 0; font-size: 1.5em;">
-                                    {risk_level} Risk of Heart Disease
-                                </p>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                    
-                    with col2:
-                        st.markdown(
-                            f"""
-                            <div style="padding: 20px; background-color: #34495e; 
-                                      border-radius: 10px; text-align: center; color: white;">
-                                <h2 style="margin: 0; font-size: 2.5em;">{confidence:.1%}</h2>
-                                <p style="margin: 5px 0 0 0; font-size: 1.5em;">
-                                    Prediction Confidence
-                                </p>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                    
-                    # Model agreement
-                    st.subheader("Model Agreement")
-                    individual_preds = prediction['individual_predictions']
-                    agreement_df = pd.DataFrame({
-                        'Model': ['Random Forest', 'XGBoost', 'Ensemble'],
-                        'Prediction': [
-                            individual_preds['random_forest'],
-                            individual_preds['xgboost'],
-                            individual_preds['voting']
-                        ]
-                    })
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        x=agreement_df['Model'],
-                        y=agreement_df['Prediction'],
-                        text=agreement_df['Prediction'].apply(lambda x: f'{x:.2%}'),
-                        textposition='auto',
+                    # Create prediction gauge chart
+                    gauge_fig = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=prediction['probability'] * 100,
+                        domain={'x': [0, 1], 'y': [0, 1]},
+                        title={'text': "Heart Disease Probability"},
+                        gauge={
+                            'axis': {'range': [0, 100]},
+                            'bar': {'color': "red"},
+                            'steps': [
+                                {'range': [0, 30], 'color': "lightgreen"},
+                                {'range': [30, 70], 'color': "yellow"},
+                                {'range': [70, 100], 'color': "salmon"}
+                            ]
+                        }
                     ))
-                    fig.update_layout(
-                        title='Individual Model Predictions',
-                        yaxis_title='Prediction',
-                        yaxis=dict(range=[0, 1]),
-                        height=500
-                    )
-                    st.plotly_chart(fig)
+                    gauge_fig.update_layout(height=300)
+                    st.plotly_chart(gauge_fig)
+                    
+                    # Show individual model predictions
+                    st.write("Individual Model Predictions:")
+                    for model, prob in prediction['individual_predictions'].items():
+                        st.write(f"- {model}: {prob:.1%}")
+                    
+                    st.write(f"Ensemble Confidence: {prediction['confidence']:.1%}")
                     
                     # Feature contribution
                     st.subheader("Feature Contribution Analysis")
@@ -371,32 +340,32 @@ def main():
                     # Risk interpretation
                     st.markdown(f"""
                     ### Risk Level Interpretation
-                    - Current Risk Level: **{risk_level}** ({risk_prob:.1%})
-                    - Prediction Confidence: **{confidence:.1%}**
+                    - Current Risk Level: **{prediction['risk_level']}** ({prediction['probability']:.1%})
+                    - Prediction Confidence: **{prediction['confidence']:.1%}**
                     
                     #### What This Means
-                    - **Risk Level**: {risk_level} risk indicates {
-                        "minimal concern and healthy indicators" if risk_prob < 0.2 else
-                        "some risk factors present but generally healthy" if risk_prob < 0.4 else
-                        "moderate risk factors requiring attention" if risk_prob < 0.6 else
-                        "significant risk factors requiring medical consultation" if risk_prob < 0.8 else
+                    - **Risk Level**: {prediction['risk_level']} risk indicates {
+                        "minimal concern and healthy indicators" if prediction['probability'] < 0.2 else
+                        "some risk factors present but generally healthy" if prediction['probability'] < 0.4 else
+                        "moderate risk factors requiring attention" if prediction['probability'] < 0.6 else
+                        "significant risk factors requiring medical consultation" if prediction['probability'] < 0.8 else
                         "multiple severe risk factors requiring immediate medical attention"
                     }
                     
                     - **Confidence Score**: {
-                        "Very high confidence in the prediction" if confidence > 0.9 else
-                        "High confidence in the prediction" if confidence > 0.8 else
-                        "Moderate confidence in the prediction" if confidence > 0.7 else
-                        "Fair confidence in the prediction" if confidence > 0.6 else
+                        "Very high confidence in the prediction" if prediction['confidence'] > 0.9 else
+                        "High confidence in the prediction" if prediction['confidence'] > 0.8 else
+                        "Moderate confidence in the prediction" if prediction['confidence'] > 0.7 else
+                        "Fair confidence in the prediction" if prediction['confidence'] > 0.6 else
                         "Low confidence in the prediction - consider consulting a healthcare provider"
                     }
                     
                     #### Recommendations
                     {
-                        "- Maintain current healthy lifestyle\n- Regular check-ups recommended" if risk_prob < 0.2 else
-                        "- Consider lifestyle modifications\n- Schedule routine check-up" if risk_prob < 0.4 else
-                        "- Consult healthcare provider\n- Evaluate risk factors\n- Consider lifestyle changes" if risk_prob < 0.6 else
-                        "- Prompt medical consultation advised\n- Comprehensive health evaluation needed" if risk_prob < 0.8 else
+                        "- Maintain current healthy lifestyle\n- Regular check-ups recommended" if prediction['probability'] < 0.2 else
+                        "- Consider lifestyle modifications\n- Schedule routine check-up" if prediction['probability'] < 0.4 else
+                        "- Consult healthcare provider\n- Evaluate risk factors\n- Consider lifestyle changes" if prediction['probability'] < 0.6 else
+                        "- Prompt medical consultation advised\n- Comprehensive health evaluation needed" if prediction['probability'] < 0.8 else
                         "- Immediate medical attention recommended\n- Comprehensive cardiac evaluation needed"
                     }
                     """)

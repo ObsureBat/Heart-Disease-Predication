@@ -24,6 +24,7 @@ joblib>=1.1.0
 jsonschema==4.23.0
 jsonschema-specifications==2024.10.1
 kiwisolver==1.4.8
+lightgbm>=3.3.0
 llvmlite==0.43.0
 markdown-it-py==3.0.0
 MarkupSafe==3.0.2
@@ -51,7 +52,7 @@ referencing==0.35.1
 requests==2.32.3
 rich==13.9.4
 rpds-py==0.22.3
-scikit-learn>=0.24.2
+scikit-learn>=1.0.0
 scipy==1.14.1
 shap>=0.40.0
 six==1.17.0
