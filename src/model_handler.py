@@ -1,166 +1,221 @@
-"""Model training and prediction handling"""
-import streamlit as st
+"""Enhanced model handler for heart disease prediction"""
 import numpy as np
-import joblib
-from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 import xgboost as xgb
+import joblib
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, classification_report
+import shap
 
-def train_models():
-    """Train models and return performance metrics"""
-    from src.data import load_and_preprocess_data
+def get_feature_names():
+    """Get feature names for the heart disease dataset"""
+    return [
+        'age', 'sex', 'cp', 'trestbps', 'chol', 'fbs', 'restecg',
+        'thalach', 'exang', 'oldpeak', 'slope', 'ca', 'thal'
+    ]
+
+def train_models(X_train, X_test, y_train, y_test, scaler):
+    """Train models with hyperparameter tuning and advanced evaluation"""
     
-    # Load and preprocess data
-    (X_train_scaled, X_test_scaled, y_train, y_test), scaler = load_and_preprocess_data()
+    # Get feature names
+    feature_names = get_feature_names()
     
-    # Convert y_train and y_test to numpy arrays and ravel them
-    y_train_array = y_train.values.ravel()
-    y_test_array = y_test.values.ravel()
+    # Convert data to DataFrames with feature names
+    X_train_df = pd.DataFrame(X_train, columns=feature_names)
+    X_test_df = pd.DataFrame(X_test, columns=feature_names)
     
-    # Calculate class weights
-    from sklearn.utils.class_weight import compute_class_weight
-    classes = np.unique(y_train_array)
-    class_weights = compute_class_weight(
-        class_weight='balanced',
-        classes=classes,
-        y=y_train_array
-    )
-    class_weight_dict = dict(zip(classes, class_weights))
+    # Random Forest hyperparameter grid
+    rf_param_grid = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [10, 20, 30, None],
+        'min_samples_split': [2, 5, 10],
+        'min_samples_leaf': [1, 2, 4]
+    }
     
-    # Train Random Forest with optimized hyperparameters
-    rf_model = RandomForestClassifier(
-        n_estimators=500,
-        max_depth=15,
-        min_samples_split=4,
-        min_samples_leaf=2,
-        max_features='sqrt',
-        random_state=42,
-        class_weight=class_weight_dict,
-        bootstrap=True,
+    # XGBoost hyperparameter grid
+    xgb_param_grid = {
+        'n_estimators': [100, 200, 300],
+        'max_depth': [3, 4, 5],
+        'learning_rate': [0.01, 0.1],
+        'subsample': [0.8, 0.9, 1.0]
+    }
+    
+    # Train Random Forest with GridSearchCV
+    rf_grid = GridSearchCV(
+        RandomForestClassifier(random_state=42),
+        rf_param_grid,
+        cv=5,
+        scoring='precision',
         n_jobs=-1
     )
-    rf_model.fit(X_train_scaled, y_train_array)
-    rf_pred = rf_model.predict(X_test_scaled)
-    rf_accuracy = accuracy_score(y_test_array, rf_pred)
-    rf_report = classification_report(y_test_array, rf_pred, zero_division=1)
+    rf_grid.fit(X_train_df, y_train.values.ravel())
+    rf_model = rf_grid.best_estimator_
     
-    # Train XGBoost with optimized hyperparameters
-    xgb_model = xgb.XGBClassifier(
-        n_estimators=500,
-        max_depth=8,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        min_child_weight=3,
-        gamma=0.1,
-        random_state=42,
-        use_label_encoder=False,
-        eval_metric='logloss'
+    # Train XGBoost with GridSearchCV
+    xgb_grid = GridSearchCV(
+        xgb.XGBClassifier(random_state=42),
+        xgb_param_grid,
+        cv=5,
+        scoring='precision',
+        n_jobs=-1
     )
+    xgb_grid.fit(X_train_df, y_train.values.ravel())
+    xgb_model = xgb_grid.best_estimator_
     
-    # Calculate sample weight for XGBoost
-    sample_weight = np.where(y_train_array == 1, 
-                           len(y_train_array)/(2*np.sum(y_train_array == 1)),
-                           len(y_train_array)/(2*np.sum(y_train_array == 0)))
-    
-    xgb_model.fit(
-        X_train_scaled, 
-        y_train_array,
-        sample_weight=sample_weight,
-        eval_set=[(X_test_scaled, y_test_array)],
-        early_stopping_rounds=50,
-        verbose=False
+    # Create Voting Classifier
+    voting_clf = VotingClassifier(
+        estimators=[
+            ('rf', rf_model),
+            ('xgb', xgb_model)
+        ],
+        voting='soft'
     )
+    voting_clf.fit(X_train_df, y_train.values.ravel())
     
-    xgb_pred = xgb_model.predict(X_test_scaled)
-    xgb_accuracy = accuracy_score(y_test_array, xgb_pred)
-    xgb_report = classification_report(y_test_array, xgb_pred, zero_division=1)
+    # Generate predictions
+    rf_pred = rf_model.predict(X_test_df)
+    xgb_pred = xgb_model.predict(X_test_df)
+    voting_pred = voting_clf.predict(X_test_df)
     
-    # Save models
+    # Calculate probabilities
+    rf_proba = rf_model.predict_proba(X_test_df)[:, 1]
+    xgb_proba = xgb_model.predict_proba(X_test_df)[:, 1]
+    voting_proba = voting_clf.predict_proba(X_test_df)[:, 1]
+    
+    # Calculate metrics
+    results = {
+        'models': {
+            'rf': rf_model,
+            'xgb': xgb_model,
+            'voting': voting_clf
+        },
+        'metrics': {
+            'Random Forest': {
+                'accuracy': accuracy_score(y_test, rf_pred),
+                'precision': precision_score(y_test, rf_pred),
+                'recall': recall_score(y_test, rf_pred),
+                'f1': f1_score(y_test, rf_pred),
+                'auc_roc': roc_auc_score(y_test, rf_proba)
+            },
+            'XGBoost': {
+                'accuracy': accuracy_score(y_test, xgb_pred),
+                'precision': precision_score(y_test, xgb_pred),
+                'recall': recall_score(y_test, xgb_pred),
+                'f1': f1_score(y_test, xgb_pred),
+                'auc_roc': roc_auc_score(y_test, xgb_proba)
+            },
+            'Voting': {
+                'accuracy': accuracy_score(y_test, voting_pred),
+                'precision': precision_score(y_test, voting_pred),
+                'recall': recall_score(y_test, voting_pred),
+                'f1': f1_score(y_test, voting_pred),
+                'auc_roc': roc_auc_score(y_test, voting_proba)
+            }
+        }
+    }
+    
+    # Calculate feature importance
+    feature_importance = pd.DataFrame({
+        'feature': feature_names,
+        'importance': rf_model.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
+    results['feature_importance'] = feature_importance
+    
+    # Generate SHAP values for model interpretability
+    try:
+        explainer = shap.TreeExplainer(rf_model)
+        shap_values = explainer.shap_values(X_test_df)
+        
+        # For binary classification, take positive class values
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]  # Take positive class
+        
+        # Convert to numpy array if needed
+        shap_values = np.array(shap_values)
+        
+        # Ensure 2D array
+        if len(shap_values.shape) == 1:
+            shap_values = shap_values.reshape(1, -1)
+        elif len(shap_values.shape) > 2:
+            shap_values = shap_values.reshape(-1, len(feature_names))
+        
+        # Calculate mean SHAP values
+        mean_shap_values = np.abs(shap_values).mean(axis=0)
+        
+        # Store results
+        results['shap_values'] = {
+            'values': mean_shap_values,  # Store mean values for visualization
+            'feature_names': feature_names
+        }
+    except Exception as e:
+        print(f"Could not calculate SHAP values: {str(e)}")
+        results['shap_values'] = None
+    
+    # Save models and scaler
     joblib.dump(rf_model, 'models/random_forest_model.joblib')
     joblib.dump(xgb_model, 'models/xgboost_model.joblib')
+    joblib.dump(voting_clf, 'models/voting_model.joblib')
     joblib.dump(scaler, 'models/scaler.joblib')
     
+    return results
+
+def predict(input_data, models, scaler):
+    """Make prediction with confidence scores and model interpretability"""
+    # Get feature names
+    feature_names = get_feature_names()
+    
+    # Scale input data
+    scaled_data = scaler.transform(input_data)
+    
+    # Convert to DataFrame for SHAP
+    scaled_df = pd.DataFrame(scaled_data, columns=feature_names)
+    
+    # Get predictions from all models
+    rf_prob = models['rf'].predict_proba(scaled_df)[0, 1]
+    xgb_prob = models['xgb'].predict_proba(scaled_df)[0, 1]
+    voting_prob = models['voting'].predict_proba(scaled_df)[0, 1]
+    
+    # Calculate ensemble probability and confidence
+    probabilities = np.array([rf_prob, xgb_prob, voting_prob])
+    final_probability = np.mean(probabilities)
+    confidence = 1 - np.std(probabilities)
+    
+    # Get feature contributions using SHAP
+    try:
+        explainer = shap.TreeExplainer(models['rf'])
+        shap_values = explainer.shap_values(scaled_df)
+        
+        # For binary classification, take positive class values
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]  # Take positive class
+        
+        # Convert to numpy array if needed
+        shap_values = np.array(shap_values)
+        
+        # Ensure 2D array
+        if len(shap_values.shape) == 1:
+            shap_values = shap_values.reshape(1, -1)
+        elif len(shap_values.shape) > 2:
+            shap_values = shap_values.reshape(-1, len(feature_names))
+        
+        # For single prediction, take the first row
+        shap_values = shap_values[0]
+        
+    except Exception as e:
+        print(f"Could not calculate SHAP values: {str(e)}")
+        shap_values = None
+    
     return {
-        'rf_accuracy': rf_accuracy,
-        'rf_report': rf_report,
-        'xgb_accuracy': xgb_accuracy,
-        'xgb_report': xgb_report
+        'probability': final_probability,
+        'confidence': confidence,
+        'individual_predictions': {
+            'random_forest': rf_prob,
+            'xgboost': xgb_prob,
+            'voting': voting_prob
+        },
+        'shap_values': shap_values,
+        'feature_names': feature_names
     }
-
-def load_models():
-    """Load trained models and scaler"""
-    try:
-        rf_model = joblib.load('models/random_forest_model.joblib')
-        xgb_model = joblib.load('models/xgboost_model.joblib')
-        scaler = joblib.load('models/scaler.joblib')
-        return rf_model, xgb_model, scaler
-    except FileNotFoundError:
-        raise FileNotFoundError("Models not found. Please train the models first.")
-
-def predict(input_data, rf_model, xgb_model, scaler):
-    """Make prediction using ensemble of models"""
-    # Scale input data
-    input_scaled = scaler.transform(input_data)
-    
-    # Get predictions from both models
-    rf_prob = rf_model.predict_proba(input_scaled)[0][1]
-    xgb_prob = xgb_model.predict_proba(input_scaled)[0][1]
-    
-    # Average the predictions
-    return (rf_prob + xgb_prob) / 2
-
-def load_or_train_models():
-    """Load pre-trained models or train new ones if not available"""
-    try:
-        return load_models()
-    except FileNotFoundError:
-        results = train_models()
-        return load_models()
-
-def make_prediction(input_data):
-    """Make prediction using ensemble of models"""
-    # Load or train models if not already loaded
-    rf_model, xgb_model, scaler = load_or_train_models()
-    
-    # Scale input data
-    input_scaled = scaler.transform(input_data)
-    
-    # Get predictions from both models
-    rf_prob = rf_model.predict_proba(input_scaled)[0][1]
-    xgb_prob = xgb_model.predict_proba(input_scaled)[0][1]
-    
-    # Average the predictions
-    ensemble_prob = (rf_prob + xgb_prob) / 2
-    
-    # Get feature importance
-    feature_importance = get_feature_importance(rf_model, xgb_model)
-    
-    return ensemble_prob, feature_importance
-
-def get_feature_importance(rf_model, xgb_model):
-    """Get combined feature importance from both models"""
-    feature_names = [
-        'Age', 'Sex', 'Chest Pain Type', 'Resting BP', 'Cholesterol',
-        'Fasting Blood Sugar', 'Resting ECG', 'Max Heart Rate',
-        'Exercise Angina', 'ST Depression', 'ST Slope'
-    ]
-    
-    # Combine feature importance from both models
-    rf_importance = rf_model.feature_importances_
-    xgb_importance = xgb_model.feature_importances_
-    
-    # Average the feature importance
-    combined_importance = (rf_importance + xgb_importance) / 2
-    
-    # Create list of dictionaries with feature names and importance
-    importance_list = [
-        {"feature": name, "importance": float(imp)}
-        for name, imp in zip(feature_names, combined_importance)
-    ]
-    
-    # Sort by importance
-    importance_list.sort(key=lambda x: x["importance"], reverse=True)
-    
-    return importance_list
